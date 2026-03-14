@@ -56,14 +56,22 @@
       <label for="team-rate">Ставка команды</label>
       <span class="optional-badge">необязательно</span>
     </div>
-    <input
-      type="number"
-      id="team-rate"
-      placeholder="Например: 2500"
-      min="1"
-      step="100"
-    />
-    <p class="optional-hint">₽ в час. Если указать — покажем стоимость проекта</p>
+    <div class="rate-input-row">
+      <input
+        type="number"
+        id="team-rate"
+        placeholder="Например: 2500"
+        min="1"
+        step="100"
+      />
+      <div class="toggle-group rate-unit-toggle">
+        <input type="radio" name="rate-unit" id="rate-hour" value="hour" checked />
+        <label for="rate-hour">₽/час</label>
+        <input type="radio" name="rate-unit" id="rate-day" value="day" />
+        <label for="rate-day">₽/день</label>
+      </div>
+    </div>
+    <p class="optional-hint" id="rate-hint">Если указать — покажем стоимость проекта (1 день = 8 часов)</p>
   </div>
 
   <button class="btn-primary" id="btn-to-screen2">

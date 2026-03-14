@@ -5,7 +5,8 @@ const state = {
   screen: 1,         // текущий экран 1|2|3
   projectName: '',
   unit: 'days',      // 'days' | 'weeks'
-  rate: null,        // ₽/час или null
+  rate: null,        // число или null
+  rateUnit: 'hour',  // 'hour' | 'day'
   tasks: [],         // массив задач
   results: null,     // { percentiles, cdfPoints }
 };
@@ -34,6 +35,19 @@ document.addEventListener('DOMContentLoaded', () => {
 function setupScreen1() {
   const form = document.getElementById('screen1');
 
+  // Динамическая подсказка при смене ₽/час ↔ ₽/день
+  form.querySelectorAll('input[name="rate-unit"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      const hint = document.getElementById('rate-hint');
+      if (!hint) return;
+      if (radio.value === 'hour') {
+        hint.textContent = 'Если указать — покажем стоимость проекта (1 день = 8 часов)';
+      } else {
+        hint.textContent = 'Если указать — покажем стоимость проекта (1 неделя = 5 рабочих дней)';
+      }
+    });
+  });
+
   form.querySelector('#btn-to-screen2').addEventListener('click', () => {
     const nameInput = form.querySelector('#project-name');
     const name = nameInput.value.trim();
@@ -47,6 +61,7 @@ function setupScreen1() {
 
     state.projectName = name;
     state.unit = form.querySelector('input[name="unit"]:checked').value;
+    state.rateUnit = form.querySelector('input[name="rate-unit"]:checked').value;
     const rateVal = parseFloat(form.querySelector('#team-rate').value);
     state.rate = isNaN(rateVal) || rateVal <= 0 ? null : rateVal;
 
@@ -310,13 +325,13 @@ function setupScreen3() {
   document.getElementById('btn-back-2').addEventListener('click', () => showScreen(2));
   document.getElementById('btn-recalculate').addEventListener('click', () => showScreen(2));
   document.getElementById('btn-export-csv').addEventListener('click', () => {
-    exportCSV(state.projectName, state.unit, state.rate, state.results.percentiles);
+    exportCSV(state.projectName, state.unit, state.rate, state.rateUnit, state.results.percentiles);
   });
   document.getElementById('btn-export-png').addEventListener('click', () => {
     exportPNG('results-content');
   });
   document.getElementById('btn-share-tg').addEventListener('click', () => {
-    shareToTelegram(state.projectName, state.unit, state.rate, state.results.percentiles);
+    shareToTelegram(state.projectName, state.unit, state.rate, state.rateUnit, state.results.percentiles);
   });
 
   // Раскрытие полной таблицы
@@ -337,6 +352,7 @@ function renderResults() {
   document.getElementById('results-title').textContent = state.projectName;
 
   // Три карточки P50/P80/P95
+  const rateLabel = state.rateUnit === 'hour' ? `${state.rate} ₽/час` : `${state.rate} ₽/день`;
   const cards = [
     { p: 50, icon: '🎯', label: 'Базовый', desc: 'Каждый второй проект завершается раньше этой даты' },
     { p: 80, icon: '📋', label: 'Для плана', desc: 'В 8 случаях из 10 уложитесь в этот срок' },
@@ -355,8 +371,8 @@ function renderResults() {
     card.querySelector('.card-desc').textContent = desc;
 
     if (hasRate) {
-      const cost = calcCost(pData.value, state.unit, state.rate);
-      card.querySelector('.card-cost').textContent = `≈ ${formatCost(cost)} ₽`;
+      const cost = calcCost(pData.value, state.rateUnit, state.rate);
+      card.querySelector('.card-cost').textContent = `≈ ${formatCost(cost)} ₽  (ставка: ${rateLabel})`;
       card.querySelector('.card-cost').classList.remove('hidden');
     } else {
       card.querySelector('.card-cost').classList.add('hidden');
@@ -370,7 +386,7 @@ function renderResults() {
     const val = formatValue(value, state.unit);
     const tr = document.createElement('tr');
     if (hasRate) {
-      const cost = calcCost(value, state.unit, state.rate);
+      const cost = calcCost(value, state.rateUnit, state.rate);
       tr.innerHTML = `<td>${p}%</td><td>${val} ${unitStr}</td><td>${formatCost(cost)} ₽</td>`;
     } else {
       tr.innerHTML = `<td>${p}%</td><td>${val} ${unitStr}</td>`;

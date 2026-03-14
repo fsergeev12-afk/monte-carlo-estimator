@@ -1,19 +1,20 @@
 // Экспорт результатов: PNG и CSV
 
-export function exportCSV(projectName, unit, rate, percentiles) {
+export function exportCSV(projectName, unit, rate, rateUnit, percentiles) {
   const unitLabel = unit === 'days' ? 'дней' : 'недель';
   const hasRate = rate && rate > 0;
+  const rateLabelStr = rateUnit === 'hour' ? `${rate} ₽/час` : `${rate} ₽/день`;
 
   let csv = '\uFEFF'; // BOM для корректного открытия в Excel
   csv += `Проект: ${projectName}\n`;
   csv += `Единица измерения: ${unitLabel}\n`;
-  if (hasRate) csv += `Ставка команды: ${rate} ₽/час\n`;
+  if (hasRate) csv += `Ставка команды: ${rateLabelStr}\n`;
   csv += '\n';
 
   if (hasRate) {
     csv += 'Вероятность,Срок,Стоимость (₽)\n';
     percentiles.forEach(({ p, value }) => {
-      const cost = calcCost(value, unit, rate);
+      const cost = calcCost(value, rateUnit, rate);
       csv += `${p}%,${formatValue(value, unit)},${formatCost(cost)}\n`;
     });
   } else {
@@ -55,9 +56,10 @@ export async function exportPNG(elementId) {
   a.click();
 }
 
-export function shareToTelegram(projectName, unit, rate, percentiles) {
+export function shareToTelegram(projectName, unit, rate, rateUnit, percentiles) {
   const unitLabel = unit === 'days' ? 'дн.' : 'нед.';
   const hasRate = rate && rate > 0;
+  const rateLabelStr = rateUnit === 'hour' ? `${rate} ₽/час` : `${rate} ₽/день`;
 
   const p50 = percentiles.find((p) => p.p === 50);
   const p80 = percentiles.find((p) => p.p === 80);
@@ -69,7 +71,9 @@ export function shareToTelegram(projectName, unit, rate, percentiles) {
   text += `🛡️ С запасом (95%): ${formatValue(p95.value, unit)} ${unitLabel}\n`;
 
   if (hasRate) {
-    text += `\n💰 Стоимость (80%): ${formatCost(calcCost(p80.value, unit, rate))} ₽\n`;
+    const cost80 = calcCost(p80.value, rateUnit, rate);
+    text += `\n💰 Стоимость (80%): ${formatCost(cost80)} ₽\n`;
+    text += `📌 Ставка: ${rateLabelStr}\n`;
   }
 
   text += '\n🎲 Рассчитано методом Монте-Карло (10 000 симуляций)';
@@ -94,10 +98,22 @@ export function formatValue(value, unit) {
   }
 }
 
-export function calcCost(value, unit, rate) {
-  // value в днях, 1 день = 8 часов
-  const hours = value * 8;
-  return Math.round(hours * rate);
+/**
+ * Расчёт стоимости.
+ * value  — всегда в рабочих днях (внутреннее представление)
+ * rateUnit — 'hour' | 'day'
+ * rate   — ставка в ₽
+ *
+ * Если ₽/час : стоимость = дни × 8 часов × ставка
+ * Если ₽/день: стоимость = дни × ставка
+ * (1 неделя = 5 дней — уже учтено, т.к. value в днях)
+ */
+export function calcCost(value, rateUnit, rate) {
+  if (rateUnit === 'hour') {
+    return Math.round(value * 8 * rate);
+  } else {
+    return Math.round(value * rate);
+  }
 }
 
 export function formatCost(cost) {

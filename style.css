@@ -235,6 +235,30 @@ input.error { border-color: var(--error); }
   font-weight: 600;
 }
 
+/* Строка «input + переключатель ₽/час|₽/день» */
+.rate-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.rate-input-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.rate-unit-toggle {
+  flex-shrink: 0;
+  width: auto;
+  min-width: 130px;
+}
+
+.rate-unit-toggle label {
+  padding: 8px 12px;
+  font-size: 13px;
+  min-height: unset;
+}
+
 /* Опциональное поле */
 .optional-label {
   display: flex;
