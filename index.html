@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Monte Carlo Estimator</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Telegram Web App SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- Шапка -->
+<header class="app-header">
+  <h1>🎲 Monte Carlo Estimator</h1>
+  <div class="subtitle">Вероятностная оценка сроков проекта</div>
+  <div class="progress-bar">
+    <div class="progress-step done" id="step1"></div>
+    <div class="progress-step" id="step2"></div>
+    <div class="progress-step" id="step3"></div>
+  </div>
+</header>
+
+<!-- ========================
+     ЭКРАН 1: Настройка
+     ======================== -->
+<div class="screen" id="screen1">
+  <h2 class="section-title">Настройка проекта</h2>
+  <p class="section-subtitle">Укажи название и параметры — это займёт 30 секунд</p>
+
+  <div class="field-group">
+    <label for="project-name">Название проекта</label>
+    <input
+      type="text"
+      id="project-name"
+      placeholder="Например: Внедрение MDM системы"
+      maxlength="80"
+      autocomplete="off"
+    />
+  </div>
+
+  <div class="field-group">
+    <label>Единица времени</label>
+    <div class="toggle-group">
+      <input type="radio" name="unit" id="unit-days" value="days" checked />
+      <label for="unit-days">Дни</label>
+      <input type="radio" name="unit" id="unit-weeks" value="weeks" />
+      <label for="unit-weeks">Недели</label>
+    </div>
+  </div>
+
+  <div class="field-group">
+    <div class="optional-label">
+      <label for="team-rate">Ставка команды</label>
+      <span class="optional-badge">необязательно</span>
+    </div>
+    <input
+      type="number"
+      id="team-rate"
+      placeholder="Например: 2500"
+      min="1"
+      step="100"
+    />
+    <p class="optional-hint">₽ в час. Если указать — покажем стоимость проекта</p>
+  </div>
+
+  <button class="btn-primary" id="btn-to-screen2">
+    Добавить задачи →
+  </button>
+</div>
+
+<!-- ========================
+     ЭКРАН 2: Задачи
+     ======================== -->
+<div class="screen hidden" id="screen2">
+  <h2 class="section-title">Задачи проекта</h2>
+  <p class="section-subtitle">
+    Добавь задачи и оцени каждую в трёх сценариях.
+    Чем точнее оценки — тем достовернее результат.
+  </p>
+
+  <div id="warning-msg" class="hidden"></div>
+
+  <div id="task-list"></div>
+
+  <button class="btn-add-task" id="btn-add-task">
+    + Добавить задачу
+  </button>
+
+  <button class="btn-primary" id="btn-calculate">
+    🎲 Рассчитать
+  </button>
+
+  <div class="btn-row" style="margin-top: 12px;">
+    <button class="btn-secondary" id="btn-back-1">← Назад</button>
+  </div>
+</div>
+
+<!-- ========================
+     ЭКРАН 3: Результаты
+     ======================== -->
+<div class="screen hidden" id="screen3">
+
+  <div class="results-header" id="results-content">
+    <div class="results-project-name" id="results-title"></div>
+    <div class="results-meta">10 000 симуляций · Метод Монте-Карло</div>
+  </div>
+
+  <!-- Три главные карточки -->
+  <div class="percentile-cards">
+
+    <div class="p-card p50" id="card-p50">
+      <div class="p-card-top">
+        <div class="p-card-icon-label">
+          <span class="card-icon"></span>
+          <span class="card-label"></span>
+        </div>
+        <span class="p-badge">P50</span>
+      </div>
+      <div class="card-value"></div>
+      <div class="card-cost hidden"></div>
+      <div class="card-prob"></div>
+      <div class="card-desc"></div>
+    </div>
+
+    <div class="p-card p80" id="card-p80">
+      <div class="p-card-top">
+        <div class="p-card-icon-label">
+          <span class="card-icon"></span>
+          <span class="card-label"></span>
+        </div>
+        <span class="p-badge">P80</span>
+      </div>
+      <div class="card-value"></div>
+      <div class="card-cost hidden"></div>
+      <div class="card-prob"></div>
+      <div class="card-desc"></div>
+    </div>
+
+    <div class="p-card p95" id="card-p95">
+      <div class="p-card-top">
+        <div class="p-card-icon-label">
+          <span class="card-icon"></span>
+          <span class="card-label"></span>
+        </div>
+        <span class="p-badge">P95</span>
+      </div>
+      <div class="card-value"></div>
+      <div class="card-cost hidden"></div>
+      <div class="card-prob"></div>
+      <div class="card-desc"></div>
+    </div>
+
+  </div>
+
+  <!-- Полная таблица -->
+  <button class="table-toggle-btn" id="btn-toggle-table">
+    ▾ Полная таблица перцентилей
+  </button>
+
+  <table id="full-table" class="hidden">
+    <thead>
+      <tr>
+        <th>Вероятность</th>
+        <th>Срок</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- CDF График -->
+  <div class="chart-wrapper">
+    <div class="chart-title">График распределения вероятностей (CDF)</div>
+    <div class="chart-container">
+      <canvas id="cdf-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Экспорт -->
+  <div class="export-section">
+    <div class="export-title">Сохранить и поделиться</div>
+    <div class="export-buttons">
+      <button class="btn-outline" id="btn-export-png">📥 PNG</button>
+      <button class="btn-outline" id="btn-export-csv">📄 CSV</button>
+      <button class="btn-outline" id="btn-share-tg">📤 В Telegram</button>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="btn-row">
+    <button class="btn-secondary" id="btn-back-2">← К задачам</button>
+    <button class="btn-primary" id="btn-recalculate" style="flex:1">
+      🔄 Пересчитать
+    </button>
+  </div>
+
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "monte-carlo-estimator",
+  "version": "1.0.0",
+  "description": "Вероятностная оценка сроков проекта методом Монте-Карло. Telegram Mini App.",
+  "private": true
+}
