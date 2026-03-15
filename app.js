@@ -168,11 +168,14 @@ function renderTaskList() {
 
     const overriddenBadge = task.presetOverridden
       ? `<span class="preset-overridden-badge">✏️ вручную</span>` : '';
+    const depsBadge = (task.predecessors && task.predecessors.length > 0)
+      ? `<span class="deps-badge" title="Зависимости из MS Project">🔗 ${task.predecessors.length} связ.</span>` : '';
 
     card.innerHTML = `
       <div class="task-header">
         <span class="task-number">Задача #${index + 1}</span>
         <div style="display:flex;align-items:center;gap:8px;">
+          ${depsBadge}
           ${overriddenBadge}
           ${state.tasks.length > 1 ? `<button class="btn-remove" data-id="${task.id}" title="Удалить">✕</button>` : ''}
         </div>
@@ -426,6 +429,26 @@ function findColIdx(headers, variants) {
   return headers.findIndex((h) => variants.some((v) => h.includes(v)));
 }
 
+// --- Парсер строки Predecessors MS Project ---
+// Форматы: "8FF+10 days", "14SS", "12", "8FF+10 days,12FS"
+function parsePredecessors(predStr) {
+  if (!predStr && predStr !== 0) return [];
+  return String(predStr).split(',').map((s) => {
+    s = s.trim();
+    if (!s) return null;
+    const m = s.match(/^(\d+)(FS|FF|SS|SF)?([+-]\d+(?:\.\d+)?\s*(?:days?|dys?|d|hrs?|h)?)?$/i);
+    if (!m) return null;
+    const id   = parseInt(m[1]);
+    const type = (m[2] || 'FS').toUpperCase();
+    const lagStr = m[3] || '';
+    const lagM   = lagStr.match(/([+-]\d+(?:\.\d+)?)/);
+    const lagRaw = lagM ? parseFloat(lagM[1]) : 0;
+    // Если lag в часах — конвертируем в дни
+    const lag = /h/i.test(lagStr) ? lagRaw / 8 : lagRaw;
+    return { id, type, lag };
+  }).filter(Boolean);
+}
+
 // --- MS Project XML парсер ---
 function parseProjectXML(xmlText) {
   const parser = new DOMParser();
@@ -483,7 +506,7 @@ async function parseExcel(file) {
   const hasDurationText = headers.some((h) => h.includes('duration') || h.includes('длительность'));
   const hasOutlineLevel = headers.some((h) => h.includes('outline level') || h.includes('уровень'));
 
-  if (hasDurationText && hasOutlineLevel) {
+  if (hasDurationText || hasOutlineLevel) {
     return parseMSProjectExcel(data, headers);
   }
 
@@ -494,9 +517,12 @@ async function parseExcel(file) {
 
 // --- Парсер MS Project Excel (экспорт через File → Export → Excel) ---
 function parseMSProjectExcel(data, headers) {
+  // Ищем колонку ID точным совпадением (не 'outline level', не 'uid')
+  const idIdx = headers.findIndex((h) => /^id$/i.test(h.trim()));
   const nameIdx    = findColIdx(headers, ['task name', 'название', 'name', 'задача', 'task']);
   const durIdx     = findColIdx(headers, ['duration', 'длительность', 'dur']);
   const levelIdx   = findColIdx(headers, ['outline level', 'уровень структуры', 'level']);
+  const predIdx    = findColIdx(headers, ['predecessors', 'предшественники', 'pred']);
   const optIdx     = findColIdx(headers, ['оптимист', 'optimistic', 'opt', 'min']);
   const pesIdx     = findColIdx(headers, ['пессимист', 'pessimistic', 'pes', 'max']);
 
@@ -504,14 +530,27 @@ function parseMSProjectExcel(data, headers) {
 
   const rows = data.slice(1).filter((r) => r[nameIdx] !== '');
 
+  // Сначала собираем ID всех листовых задач, чтобы фильтровать ссылки на суммарные
+  const leafIds = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const level     = levelIdx >= 0 ? parseInt(rows[i][levelIdx]) || 0 : 0;
+    const nextLevel = (i + 1 < rows.length && levelIdx >= 0)
+      ? parseInt(rows[i + 1][levelIdx]) || 0 : 0;
+    const isSummary = level > 0 && nextLevel > level;
+    if (!isSummary) {
+      const msId = idIdx >= 0 ? parseInt(rows[i][idIdx]) : i + 1;
+      if (msId) leafIds.add(msId);
+    }
+  }
+
   const tasks = [];
   for (let i = 0; i < rows.length; i++) {
-    const row     = rows[i];
-    const name    = String(row[nameIdx]).trim();
-    const durStr  = String(row[durIdx]).trim();
-    const level   = levelIdx >= 0 ? parseInt(row[levelIdx]) || 0 : 0;
+    const row    = rows[i];
+    const name   = String(row[nameIdx]).trim();
+    const durStr = String(row[durIdx]).trim();
+    const level  = levelIdx >= 0 ? parseInt(row[levelIdx]) || 0 : 0;
 
-    // Суммарная задача: следующая строка имеет более глубокий уровень → пропускаем
+    // Суммарная задача: следующая строка глубже → пропускаем
     const nextLevel = (i + 1 < rows.length && levelIdx >= 0)
       ? parseInt(rows[i + 1][levelIdx]) || 0 : 0;
     const isSummary = level > 0 && nextLevel > level;
@@ -522,23 +561,36 @@ function parseMSProjectExcel(data, headers) {
     if (!durMatch) continue;
     let days = parseFloat(durMatch[1]);
 
-    // Конвертируем если duration в минутах/часах (MS Project иногда хранит так)
     if (durStr.toLowerCase().includes('hour') || durStr.toLowerCase().includes('час')) {
       days = days / 8;
     } else if (durStr.toLowerCase().includes('min') || durStr.toLowerCase().includes('мин')) {
       days = days / 480;
     }
 
-    if (days <= 0) continue; // пропускаем milestone (0 days)
+    if (days <= 0) continue; // milestone (0 days) → пропускаем
 
     // Переводим в текущую единицу
     const value = state.unit === 'weeks' ? +(days / 5).toFixed(1) : +days.toFixed(1);
 
-    // Берём оптимист/пессимист из файла если есть
+    // Оригинальный ID из файла
+    const msId = idIdx >= 0 ? parseInt(row[idIdx]) : i + 1;
+
+    // Парсим предшественников, оставляем только ссылки на листовые задачи
+    const rawPreds = predIdx >= 0 ? parsePredecessors(row[predIdx]) : [];
+    const predecessors = rawPreds.filter((p) => leafIds.has(p.id));
+
+    // Оптимист / пессимист из файла если есть
     const opt = optIdx >= 0 ? parseFloat(row[optIdx]) || '' : '';
     const pes = pesIdx >= 0 ? parseFloat(row[pesIdx]) || '' : '';
 
-    tasks.push({ name, realistic: value, optimistic: opt, pessimistic: pes });
+    tasks.push({
+      name,
+      realistic:    value,
+      optimistic:   opt,
+      pessimistic:  pes,
+      msProjectId:  msId,
+      predecessors,
+    });
   }
 
   return tasks;
@@ -624,14 +676,17 @@ function importSelectedTasks() {
     if (!task) return;
     taskIdCounter++;
     state.tasks.push({
-      id: taskIdCounter,
-      name: task.name,
-      optimistic: String(task.optimistic || ''),
-      realistic:  String(task.realistic  || ''),
-      pessimistic: String(task.pessimistic || ''),
-      preset: state.globalPreset,
+      id:           taskIdCounter,
+      name:         task.name,
+      optimistic:   String(task.optimistic  || ''),
+      realistic:    String(task.realistic   || ''),
+      pessimistic:  String(task.pessimistic || ''),
+      preset:       state.globalPreset,
       presetOverridden: false,
-      weights: [...PRESETS[state.globalPreset].weights],
+      weights:      [...PRESETS[state.globalPreset].weights],
+      // Данные из MS Project (для CPM)
+      msProjectId:  task.msProjectId  ?? null,
+      predecessors: task.predecessors ?? [],
     });
   });
 
@@ -677,11 +732,16 @@ function runSimulation() {
   btn.disabled = true;
   btn.textContent = '⏳ Считаем...';
 
-  const tasksData = state.tasks.map((t) => ({
-    optimistic:  parseFloat(t.optimistic),
-    realistic:   parseFloat(t.realistic),
-    pessimistic: parseFloat(t.pessimistic),
-    weights: t.weights,
+  // Для CPM worker нужны id и predecessors.
+  // Если задача импортирована из MS Project — используем msProjectId как id,
+  // иначе используем порядковый индекс.
+  const tasksData = state.tasks.map((t, idx) => ({
+    id:           t.msProjectId ?? (idx + 1),
+    optimistic:   parseFloat(t.optimistic),
+    realistic:    parseFloat(t.realistic),
+    pessimistic:  parseFloat(t.pessimistic),
+    weights:      t.weights,
+    predecessors: t.predecessors || [],
   }));
 
   if (worker) worker.terminate();
@@ -730,11 +790,26 @@ function setupScreen3() {
 }
 
 function renderResults() {
-  const { percentiles, cdfPoints } = state.results;
+  const { percentiles, cdfPoints, mode } = state.results;
   const hasRate = state.rate && state.rate > 0;
   const unitStr = state.unit === 'days' ? 'дн.' : 'нед.';
 
   document.getElementById('results-title').textContent = state.projectName;
+
+  // Показываем режим расчёта
+  let modeEl = document.getElementById('results-mode-badge');
+  if (!modeEl) {
+    modeEl = document.createElement('p');
+    modeEl.id = 'results-mode-badge';
+    modeEl.className = 'results-mode-badge';
+    document.getElementById('results-title').after(modeEl);
+  }
+  if (mode === 'cpm') {
+    const depsCount = state.tasks.filter(t => t.predecessors && t.predecessors.length > 0).length;
+    modeEl.innerHTML = `<span class="badge-cpm">📐 CPM</span> Учтены зависимости между задачами (${depsCount} связей)`;
+  } else {
+    modeEl.innerHTML = `<span class="badge-sum">∑ Сумма</span> Задачи суммируются последовательно`;
+  }
 
   const rateLabel = state.rateUnit === 'hour' ? `${state.rate} ₽/час` : `${state.rate} ₽/день`;
   const cards = [
