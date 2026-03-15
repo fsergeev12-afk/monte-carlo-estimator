@@ -473,8 +473,75 @@ async function parseExcel(file) {
   const buf = await file.arrayBuffer();
   const wb = window.XLSX.read(buf, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
+  const data = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  if (data.length < 2) return [];
+
+  const headers = data[0].map((h) => String(h).toLowerCase().trim());
+
+  // Определяем формат: MS Project Excel?
+  const hasDurationText = headers.some((h) => h.includes('duration') || h.includes('длительность'));
+  const hasOutlineLevel = headers.some((h) => h.includes('outline level') || h.includes('уровень'));
+
+  if (hasDurationText && hasOutlineLevel) {
+    return parseMSProjectExcel(data, headers);
+  }
+
+  // Обычный Excel — конвертируем в CSV и парсим
   const csv = window.XLSX.utils.sheet_to_csv(ws);
   return parseCSV(csv);
+}
+
+// --- Парсер MS Project Excel (экспорт через File → Export → Excel) ---
+function parseMSProjectExcel(data, headers) {
+  const nameIdx    = findColIdx(headers, ['task name', 'название', 'name', 'задача', 'task']);
+  const durIdx     = findColIdx(headers, ['duration', 'длительность', 'dur']);
+  const levelIdx   = findColIdx(headers, ['outline level', 'уровень структуры', 'level']);
+  const optIdx     = findColIdx(headers, ['оптимист', 'optimistic', 'opt', 'min']);
+  const pesIdx     = findColIdx(headers, ['пессимист', 'pessimistic', 'pes', 'max']);
+
+  if (nameIdx === -1 || durIdx === -1) return [];
+
+  const rows = data.slice(1).filter((r) => r[nameIdx] !== '');
+
+  const tasks = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row     = rows[i];
+    const name    = String(row[nameIdx]).trim();
+    const durStr  = String(row[durIdx]).trim();
+    const level   = levelIdx >= 0 ? parseInt(row[levelIdx]) || 0 : 0;
+
+    // Суммарная задача: следующая строка имеет более глубокий уровень → пропускаем
+    const nextLevel = (i + 1 < rows.length && levelIdx >= 0)
+      ? parseInt(rows[i + 1][levelIdx]) || 0 : 0;
+    const isSummary = level > 0 && nextLevel > level;
+    if (isSummary) continue;
+
+    // Парсим длительность: "5 days", "5 дней", "5d", "5"
+    const durMatch = durStr.match(/(\d+(?:\.\d+)?)/);
+    if (!durMatch) continue;
+    let days = parseFloat(durMatch[1]);
+
+    // Конвертируем если duration в минутах/часах (MS Project иногда хранит так)
+    if (durStr.toLowerCase().includes('hour') || durStr.toLowerCase().includes('час')) {
+      days = days / 8;
+    } else if (durStr.toLowerCase().includes('min') || durStr.toLowerCase().includes('мин')) {
+      days = days / 480;
+    }
+
+    if (days <= 0) continue; // пропускаем milestone (0 days)
+
+    // Переводим в текущую единицу
+    const value = state.unit === 'weeks' ? +(days / 5).toFixed(1) : +days.toFixed(1);
+
+    // Берём оптимист/пессимист из файла если есть
+    const opt = optIdx >= 0 ? parseFloat(row[optIdx]) || '' : '';
+    const pes = pesIdx >= 0 ? parseFloat(row[pesIdx]) || '' : '';
+
+    tasks.push({ name, realistic: value, optimistic: opt, pessimistic: pes });
+  }
+
+  return tasks;
 }
 
 function loadScript(src) {
