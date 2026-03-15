@@ -1,14 +1,22 @@
 import { exportCSV, exportPNG, shareToTelegram, formatValue, calcCost, formatCost } from './export.js';
 
+// --- Пресеты вероятностей сценариев ---
+const PRESETS = {
+  optimistic:  { label: '🚀 Оптимист',   weights: [40, 40, 20], hint: '40 / 40 / 20' },
+  neutral:     { label: '🟡 Нейтрально', weights: [25, 50, 25], hint: '25 / 50 / 25' },
+  pessimistic: { label: '⚠️ Риск',       weights: [15, 35, 50], hint: '15 / 35 / 50' },
+};
+
 // --- Состояние приложения ---
 const state = {
-  screen: 1,         // текущий экран 1|2|3
+  screen: 1,
   projectName: '',
-  unit: 'days',      // 'days' | 'weeks'
-  rate: null,        // число или null
-  rateUnit: 'hour',  // 'hour' | 'day'
-  tasks: [],         // массив задач
-  results: null,     // { percentiles, cdfPoints }
+  unit: 'days',       // 'days' | 'weeks'
+  rate: null,
+  rateUnit: 'hour',   // 'hour' | 'day'
+  globalPreset: 'neutral',
+  tasks: [],
+  results: null,
 };
 
 let taskIdCounter = 0;
@@ -17,12 +25,10 @@ let worker = null;
 
 // --- Инициализация ---
 document.addEventListener('DOMContentLoaded', () => {
-  // Telegram Web App SDK
   if (window.Telegram?.WebApp) {
     window.Telegram.WebApp.ready();
     window.Telegram.WebApp.expand();
   }
-
   setupScreen1();
   setupScreen2();
   setupScreen3();
@@ -35,28 +41,20 @@ document.addEventListener('DOMContentLoaded', () => {
 function setupScreen1() {
   const form = document.getElementById('screen1');
 
-  // Динамическая подсказка при смене ₽/час ↔ ₽/день
   form.querySelectorAll('input[name="rate-unit"]').forEach((radio) => {
     radio.addEventListener('change', () => {
       const hint = document.getElementById('rate-hint');
       if (!hint) return;
-      if (radio.value === 'hour') {
-        hint.textContent = 'Если указать — покажем стоимость проекта (1 день = 8 часов)';
-      } else {
-        hint.textContent = 'Если указать — покажем стоимость проекта (1 неделя = 5 рабочих дней)';
-      }
+      hint.textContent = radio.value === 'hour'
+        ? 'Если указать — покажем стоимость проекта (1 день = 8 часов)'
+        : 'Если указать — покажем стоимость проекта (1 неделя = 5 рабочих дней)';
     });
   });
 
   form.querySelector('#btn-to-screen2').addEventListener('click', () => {
     const nameInput = form.querySelector('#project-name');
     const name = nameInput.value.trim();
-
-    if (!name) {
-      nameInput.classList.add('error');
-      nameInput.focus();
-      return;
-    }
+    if (!name) { nameInput.classList.add('error'); nameInput.focus(); return; }
     nameInput.classList.remove('error');
 
     state.projectName = name;
@@ -65,9 +63,7 @@ function setupScreen1() {
     const rateVal = parseFloat(form.querySelector('#team-rate').value);
     state.rate = isNaN(rateVal) || rateVal <= 0 ? null : rateVal;
 
-    // Добавляем первую задачу если список пустой
     if (state.tasks.length === 0) addTask();
-
     renderTaskList();
     showScreen(2);
   });
@@ -77,6 +73,23 @@ function setupScreen1() {
 // ЭКРАН 2: Задачи
 // ===========================
 function setupScreen2() {
+  // Глобальный пресет
+  document.querySelectorAll('#global-presets .preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.globalPreset = btn.dataset.preset;
+      // Обновляем все задачи, у которых нет ручного переопределения
+      state.tasks.forEach((task) => {
+        if (!task.presetOverridden) {
+          task.preset = state.globalPreset;
+          task.weights = [...PRESETS[state.globalPreset].weights];
+        }
+      });
+      renderGlobalPresets();
+      renderTaskList();
+    });
+  });
+
+  // Добавить задачу
   document.getElementById('btn-add-task').addEventListener('click', () => {
     if (state.tasks.length >= 30) {
       showWarning('⚠️ Много задач — рассмотри декомпозицию по этапам и оценивай каждый этап отдельно.');
@@ -85,11 +98,34 @@ function setupScreen2() {
     renderTaskList();
   });
 
-  document.getElementById('btn-back-1').addEventListener('click', () => showScreen(1));
+  // Импорт файла
+  document.getElementById('btn-import-tasks').addEventListener('click', () => {
+    document.getElementById('import-file-input').click();
+  });
 
+  document.getElementById('import-file-input').addEventListener('change', handleFileImport);
+
+  // Скачать шаблон
+  document.getElementById('btn-download-template').addEventListener('click', (e) => {
+    e.preventDefault();
+    downloadTemplate();
+  });
+
+  document.getElementById('btn-back-1').addEventListener('click', () => showScreen(1));
   document.getElementById('btn-calculate').addEventListener('click', () => {
     if (!validateTasks()) return;
     runSimulation();
+  });
+
+  // Кнопки модального окна импорта
+  document.getElementById('btn-import-cancel').addEventListener('click', closeImportModal);
+  document.getElementById('btn-close-modal').addEventListener('click', closeImportModal);
+  document.getElementById('btn-import-confirm').addEventListener('click', importSelectedTasks);
+}
+
+function renderGlobalPresets() {
+  document.querySelectorAll('#global-presets .preset-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.preset === state.globalPreset);
   });
 }
 
@@ -101,7 +137,9 @@ function addTask() {
     optimistic: '',
     realistic: '',
     pessimistic: '',
-    weights: [25, 50, 25],
+    preset: state.globalPreset,
+    presetOverridden: false,
+    weights: [...PRESETS[state.globalPreset].weights],
   });
 }
 
@@ -117,21 +155,25 @@ function renderTaskList() {
   state.tasks.forEach((task, index) => {
     const card = document.createElement('div');
     card.className = 'task-card';
+
+    const overriddenBadge = task.presetOverridden
+      ? `<span class="preset-overridden-badge">✏️ вручную</span>` : '';
+
     card.innerHTML = `
       <div class="task-header">
         <span class="task-number">Задача #${index + 1}</span>
-        ${state.tasks.length > 1 ? `<button class="btn-remove" data-id="${task.id}" title="Удалить">✕</button>` : ''}
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${overriddenBadge}
+          ${state.tasks.length > 1 ? `<button class="btn-remove" data-id="${task.id}" title="Удалить">✕</button>` : ''}
+        </div>
       </div>
 
       <div class="field-group">
         <label>Название задачи</label>
-        <input
-          type="text"
-          class="task-name"
+        <input type="text" class="task-name"
           placeholder="Например: Разработка API"
           value="${escapeHtml(task.name)}"
-          data-id="${task.id}"
-          data-field="name"
+          data-id="${task.id}" data-field="name"
         />
       </div>
 
@@ -142,69 +184,70 @@ function renderTaskList() {
           <div class="scenario">
             <div class="scenario-icon">🟢</div>
             <div class="scenario-label">Оптимистично<br><small>Всё пойдёт идеально</small></div>
-            <input type="number" min="0.1" step="0.1"
-              class="scenario-input" placeholder="3"
+            <input type="number" min="0.1" step="0.1" class="scenario-input" placeholder="3"
               value="${task.optimistic}"
-              data-id="${task.id}" data-field="optimistic"
-            />
+              data-id="${task.id}" data-field="optimistic" />
             <span class="unit-suffix">${unitSuffix()}</span>
           </div>
           <div class="scenario">
             <div class="scenario-icon">🟡</div>
             <div class="scenario-label">Реалистично<br><small>Обычный ход событий</small></div>
-            <input type="number" min="0.1" step="0.1"
-              class="scenario-input" placeholder="7"
+            <input type="number" min="0.1" step="0.1" class="scenario-input" placeholder="7"
               value="${task.realistic}"
-              data-id="${task.id}" data-field="realistic"
-            />
+              data-id="${task.id}" data-field="realistic" />
             <span class="unit-suffix">${unitSuffix()}</span>
           </div>
           <div class="scenario">
             <div class="scenario-icon">🔴</div>
             <div class="scenario-label">Пессимистично<br><small>Что-то пойдёт не так</small></div>
-            <input type="number" min="0.1" step="0.1"
-              class="scenario-input" placeholder="14"
+            <input type="number" min="0.1" step="0.1" class="scenario-input" placeholder="14"
               value="${task.pessimistic}"
-              data-id="${task.id}" data-field="pessimistic"
-            />
+              data-id="${task.id}" data-field="pessimistic" />
             <span class="unit-suffix">${unitSuffix()}</span>
           </div>
         </div>
       </div>
 
       <div class="field-group">
-        <label>С какой вероятностью выпадет каждый сценарий?</label>
-        <p class="hint">По умолчанию 25/50/25. Увеличь пессимизм если проект рискованный.</p>
-        <div class="weights">
-          <div class="weight-item">
-            <span>🟢</span>
-            <input type="number" min="0" max="100"
-              class="weight-input" value="${task.weights[0]}"
-              data-id="${task.id}" data-field="w0"
-            />
-            <span>%</span>
-          </div>
-          <div class="weight-sep">+</div>
-          <div class="weight-item">
-            <span>🟡</span>
-            <input type="number" min="0" max="100"
-              class="weight-input" value="${task.weights[1]}"
-              data-id="${task.id}" data-field="w1"
-            />
-            <span>%</span>
-          </div>
-          <div class="weight-sep">+</div>
-          <div class="weight-item">
-            <span>🔴</span>
-            <input type="number" min="0" max="100"
-              class="weight-input" value="${task.weights[2]}"
-              data-id="${task.id}" data-field="w2"
-            />
-            <span>%</span>
-          </div>
-          <div class="weight-sep">=</div>
-          <div class="weight-total" data-id="${task.id}">
-            ${task.weights[0] + task.weights[1] + task.weights[2]}%
+        <label>Профиль риска задачи</label>
+        <p class="hint">Влияет на вероятность каждого сценария</p>
+        <div class="preset-buttons task-presets" data-id="${task.id}">
+          ${Object.entries(PRESETS).map(([key, p]) => `
+            <button class="preset-btn ${task.preset === key && !task.presetOverridden ? 'active' : ''}"
+              data-id="${task.id}" data-preset="${key}">
+              ${p.label}<br><small class="preset-hint-text">${p.hint}</small>
+            </button>
+          `).join('')}
+        </div>
+        <div class="weights-manual-toggle">
+          <button class="btn-manual-toggle" data-id="${task.id}">⚙️ задать вручную</button>
+        </div>
+        <div class="weights-manual hidden" data-id="${task.id}">
+          <div class="weights">
+            <div class="weight-item">
+              <span>🟢</span>
+              <input type="number" min="0" max="100" class="weight-input" value="${task.weights[0]}"
+                data-id="${task.id}" data-field="w0" />
+              <span>%</span>
+            </div>
+            <div class="weight-sep">+</div>
+            <div class="weight-item">
+              <span>🟡</span>
+              <input type="number" min="0" max="100" class="weight-input" value="${task.weights[1]}"
+                data-id="${task.id}" data-field="w1" />
+              <span>%</span>
+            </div>
+            <div class="weight-sep">+</div>
+            <div class="weight-item">
+              <span>🔴</span>
+              <input type="number" min="0" max="100" class="weight-input" value="${task.weights[2]}"
+                data-id="${task.id}" data-field="w2" />
+              <span>%</span>
+            </div>
+            <div class="weight-sep">=</div>
+            <div class="weight-total" data-id="${task.id}">
+              ${task.weights.reduce((a, b) => a + b, 0)}%
+            </div>
           </div>
         </div>
       </div>
@@ -212,14 +255,37 @@ function renderTaskList() {
     container.appendChild(card);
   });
 
-  // Навешиваем события
+  // События — удаление
   container.querySelectorAll('.btn-remove').forEach((btn) => {
     btn.addEventListener('click', () => removeTask(+btn.dataset.id));
   });
 
+  // События — пресеты задачи
+  container.querySelectorAll('.task-presets .preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => handleTaskPresetClick(btn));
+  });
+
+  // События — кнопка "задать вручную"
+  container.querySelectorAll('.btn-manual-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const manualSection = container.querySelector(`.weights-manual[data-id="${btn.dataset.id}"]`);
+      if (manualSection) manualSection.classList.toggle('hidden');
+    });
+  });
+
+  // События — инпуты
   container.querySelectorAll('input[data-field]').forEach((input) => {
     input.addEventListener('input', handleTaskInput);
   });
+}
+
+function handleTaskPresetClick(btn) {
+  const task = state.tasks.find((t) => t.id === +btn.dataset.id);
+  if (!task) return;
+  task.preset = btn.dataset.preset;
+  task.weights = [...PRESETS[task.preset].weights];
+  task.presetOverridden = (task.preset !== state.globalPreset);
+  renderTaskList();
 }
 
 function handleTaskInput(e) {
@@ -235,7 +301,8 @@ function handleTaskInput(e) {
   } else if (['w0', 'w1', 'w2'].includes(field)) {
     const idx = +field[1];
     task.weights[idx] = parseFloat(e.target.value) || 0;
-    // Обновляем отображение суммы
+    task.presetOverridden = true;
+    task.preset = '_custom';
     const total = task.weights.reduce((a, b) => a + b, 0);
     const totalEl = document.querySelector(`.weight-total[data-id="${id}"]`);
     if (totalEl) {
@@ -245,37 +312,284 @@ function handleTaskInput(e) {
   }
 }
 
-function validateTasks() {
-  let valid = true;
+// ===========================
+// ИМПОРТ ФАЙЛОВ
+// ===========================
+async function handleFileImport(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = ''; // сбрасываем для повторного выбора
 
+  try {
+    let parsed = [];
+    const ext = file.name.split('.').pop().toLowerCase();
+
+    if (ext === 'csv') {
+      const text = await file.text();
+      parsed = parseCSV(text);
+    } else if (ext === 'xml') {
+      const text = await file.text();
+      parsed = parseProjectXML(text);
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      parsed = await parseExcel(file);
+    } else {
+      showWarning('Поддерживаемые форматы: CSV, XLSX, XML (MS Project)');
+      return;
+    }
+
+    if (!parsed || parsed.length === 0) {
+      showWarning('Не удалось распознать задачи в файле. Проверь формат и попробуй шаблон CSV.');
+      return;
+    }
+
+    // Автоматически рассчитываем оптимист/пессимист если не заданы
+    parsed = parsed.map(autoCalcScenarios);
+    showImportModal(parsed);
+
+  } catch (err) {
+    console.error(err);
+    showWarning('Ошибка при чтении файла: ' + err.message);
+  }
+}
+
+function autoCalcScenarios(task) {
+  const r = parseFloat(task.realistic);
+  if (isNaN(r) || r <= 0) return task;
+  return {
+    ...task,
+    optimistic: task.optimistic || +(r * 0.7).toFixed(1),
+    realistic: r,
+    pessimistic: task.pessimistic || +(r * 1.5).toFixed(1),
+  };
+}
+
+// --- CSV парсер ---
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(/[,;\t]/).map((h) => h.trim().replace(/^["']|["']$/g, '').toLowerCase());
+
+  const colIdx = {
+    name: findColIdx(headers, ['название', 'name', 'задача', 'task', 'summary', 'заголовок']),
+    optimistic: findColIdx(headers, ['оптимист', 'optimistic', 'opt', 'min', 'мин', 'лучший']),
+    realistic: findColIdx(headers, ['реалист', 'realistic', 'real', 'duration', 'длительность', 'estimate', 'mid', 'оценка']),
+    pessimistic: findColIdx(headers, ['пессимист', 'pessimistic', 'pes', 'max', 'макс', 'худший']),
+  };
+
+  if (colIdx.name === -1) return [];
+
+  const tasks = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    if (!cols.length) continue;
+    const name = (cols[colIdx.name] || '').trim().replace(/^["']|["']$/g, '');
+    if (!name) continue;
+
+    tasks.push({
+      name,
+      optimistic: colIdx.optimistic >= 0 ? parseFloat(cols[colIdx.optimistic]) || '' : '',
+      realistic:  colIdx.realistic  >= 0 ? parseFloat(cols[colIdx.realistic])  || '' : '',
+      pessimistic: colIdx.pessimistic >= 0 ? parseFloat(cols[colIdx.pessimistic]) || '' : '',
+    });
+  }
+  return tasks;
+}
+
+function splitCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (const ch of line) {
+    if (ch === '"') { inQuotes = !inQuotes; continue; }
+    if ((ch === ',' || ch === ';' || ch === '\t') && !inQuotes) {
+      result.push(current); current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+function findColIdx(headers, variants) {
+  return headers.findIndex((h) => variants.some((v) => h.includes(v)));
+}
+
+// --- MS Project XML парсер ---
+function parseProjectXML(xmlText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlText, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('Невалидный XML');
+
+  const tasks = [];
+  doc.querySelectorAll('Task').forEach((taskEl) => {
+    // Пропускаем суммарные задачи
+    const isSummary = taskEl.querySelector('Summary')?.textContent === '1';
+    const isNull    = taskEl.querySelector('Null')?.textContent === '1';
+    if (isSummary || isNull) return;
+
+    const name = taskEl.querySelector('Name')?.textContent?.trim();
+    if (!name || name === 'Project Summary' || name === 'New Task') return;
+
+    const durationStr = taskEl.querySelector('Duration')?.textContent;
+    if (!durationStr) return;
+
+    const days = parseMSPDuration(durationStr);
+    if (days <= 0) return;
+
+    // Переводим в текущую единицу
+    const value = state.unit === 'weeks' ? +(days / 5).toFixed(1) : +days.toFixed(1);
+    tasks.push({ name, realistic: value, optimistic: '', pessimistic: '' });
+  });
+  return tasks;
+}
+
+function parseMSPDuration(str) {
+  // ISO 8601: PT8H0M0S или P1DT0H0M0S
+  const m = str.match(/P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?/);
+  if (!m) return 0;
+  const d = parseFloat(m[1] || 0);
+  const h = parseFloat(m[2] || 0);
+  const min = parseFloat(m[3] || 0);
+  return d + h / 8 + min / 480;
+}
+
+// --- Excel парсер (SheetJS) ---
+async function parseExcel(file) {
+  if (!window.XLSX) {
+    await loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+  }
+  const buf = await file.arrayBuffer();
+  const wb = window.XLSX.read(buf, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const csv = window.XLSX.utils.sheet_to_csv(ws);
+  return parseCSV(csv);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// --- Скачать шаблон CSV ---
+function downloadTemplate() {
+  const unit = state.unit === 'days' ? 'дней' : 'недель';
+  let csv = '\uFEFF';
+  csv += `Название,Оптимист (${unit}),Реалист (${unit}),Пессимист (${unit})\n`;
+  csv += `Подготовка инфраструктуры,2,5,10\n`;
+  csv += `Разработка API,3,7,14\n`;
+  csv += `Тестирование,1,3,6\n`;
+  csv += `Деплой,0.5,1,2\n`;
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'monte-carlo-template.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- Модальное окно предпросмотра импорта ---
+function showImportModal(parsedTasks) {
+  const list = document.getElementById('import-task-preview');
+  list.innerHTML = '';
+
+  parsedTasks.forEach((task, i) => {
+    const row = document.createElement('div');
+    row.className = 'import-task-row';
+    const hasAllValues = task.optimistic && task.realistic && task.pessimistic;
+    row.innerHTML = `
+      <label class="import-task-label">
+        <input type="checkbox" class="import-checkbox" data-idx="${i}" ${hasAllValues ? 'checked' : ''} />
+        <span class="import-task-name">${escapeHtml(task.name)}</span>
+        <span class="import-task-values">
+          🟢 ${task.optimistic || '?'} / 🟡 ${task.realistic || '?'} / 🔴 ${task.pessimistic || '?'}
+          <span class="import-unit">${unitSuffix()}</span>
+        </span>
+      </label>
+    `;
+    list.appendChild(row);
+  });
+
+  // Сохраняем данные для подтверждения
+  list.dataset.tasks = JSON.stringify(parsedTasks);
+
+  // Обновляем счётчик
+  document.getElementById('import-selected-count').textContent =
+    parsedTasks.filter((_, i) => true).length;
+
+  // Пересчёт счётчика при изменении чекбоксов
+  list.querySelectorAll('.import-checkbox').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const selected = list.querySelectorAll('.import-checkbox:checked').length;
+      document.getElementById('import-selected-count').textContent = selected;
+    });
+  });
+
+  document.getElementById('import-modal').classList.remove('hidden');
+}
+
+function closeImportModal() {
+  document.getElementById('import-modal').classList.add('hidden');
+}
+
+function importSelectedTasks() {
+  const list = document.getElementById('import-task-preview');
+  const allTasks = JSON.parse(list.dataset.tasks || '[]');
+  const checkboxes = list.querySelectorAll('.import-checkbox:checked');
+
+  checkboxes.forEach((cb) => {
+    const task = allTasks[+cb.dataset.idx];
+    if (!task) return;
+    taskIdCounter++;
+    state.tasks.push({
+      id: taskIdCounter,
+      name: task.name,
+      optimistic: String(task.optimistic || ''),
+      realistic:  String(task.realistic  || ''),
+      pessimistic: String(task.pessimistic || ''),
+      preset: state.globalPreset,
+      presetOverridden: false,
+      weights: [...PRESETS[state.globalPreset].weights],
+    });
+  });
+
+  closeImportModal();
+  renderTaskList();
+}
+
+// ===========================
+// ВАЛИДАЦИЯ
+// ===========================
+function validateTasks() {
   if (state.tasks.length === 0) {
     showWarning('Добавь хотя бы одну задачу.');
     return false;
   }
-
   for (const task of state.tasks) {
-    const opt = parseFloat(task.optimistic);
+    const opt  = parseFloat(task.optimistic);
     const real = parseFloat(task.realistic);
-    const pes = parseFloat(task.pessimistic);
+    const pes  = parseFloat(task.pessimistic);
 
     if (isNaN(opt) || isNaN(real) || isNaN(pes)) {
       showWarning('Заполни все три сценария для каждой задачи.');
       return false;
     }
-
     if (!(opt <= real && real <= pes)) {
-      showWarning(`Задача "${task.name || '?'}": Оптимистичная ≤ Реалистичная ≤ Пессимистичная`);
+      showWarning(`Задача "${task.name || '?'}": Оптимист ≤ Реалист ≤ Пессимист`);
       return false;
     }
-
     const weightSum = Math.round(task.weights.reduce((a, b) => a + b, 0));
     if (weightSum !== 100) {
-      showWarning(`Задача "${task.name || '?'}": сумма весов должна быть 100% (сейчас ${weightSum}%)`);
+      showWarning(`Задача "${task.name || '?'}": сумма весов = ${weightSum}% (нужно 100%)`);
       return false;
     }
   }
-
-  return valid;
+  return true;
 }
 
 // ===========================
@@ -287,25 +601,22 @@ function runSimulation() {
   btn.textContent = '⏳ Считаем...';
 
   const tasksData = state.tasks.map((t) => ({
-    optimistic: parseFloat(t.optimistic),
-    realistic: parseFloat(t.realistic),
+    optimistic:  parseFloat(t.optimistic),
+    realistic:   parseFloat(t.realistic),
     pessimistic: parseFloat(t.pessimistic),
     weights: t.weights,
   }));
 
   if (worker) worker.terminate();
   worker = new Worker('./worker.js');
-
   worker.postMessage({ tasks: tasksData, iterations: 10000 });
 
   worker.onmessage = (e) => {
     state.results = e.data;
     worker.terminate();
     worker = null;
-
     btn.disabled = false;
     btn.textContent = '🎲 Рассчитать';
-
     renderResults();
     showScreen(3);
   };
@@ -333,8 +644,6 @@ function setupScreen3() {
   document.getElementById('btn-share-tg').addEventListener('click', () => {
     shareToTelegram(state.projectName, state.unit, state.rate, state.rateUnit, state.results.percentiles);
   });
-
-  // Раскрытие полной таблицы
   document.getElementById('btn-toggle-table').addEventListener('click', () => {
     const table = document.getElementById('full-table');
     const btn = document.getElementById('btn-toggle-table');
@@ -348,13 +657,11 @@ function renderResults() {
   const hasRate = state.rate && state.rate > 0;
   const unitStr = state.unit === 'days' ? 'дн.' : 'нед.';
 
-  // Заголовок
   document.getElementById('results-title').textContent = state.projectName;
 
-  // Три карточки P50/P80/P95
   const rateLabel = state.rateUnit === 'hour' ? `${state.rate} ₽/час` : `${state.rate} ₽/день`;
   const cards = [
-    { p: 50, icon: '🎯', label: 'Базовый', desc: 'Каждый второй проект завершается раньше этой даты' },
+    { p: 50, icon: '🎯', label: 'Базовый',   desc: 'Каждый второй проект завершается раньше этой даты' },
     { p: 80, icon: '📋', label: 'Для плана', desc: 'В 8 случаях из 10 уложитесь в этот срок' },
     { p: 95, icon: '🛡️', label: 'С запасом', desc: 'Практически наверняка. Называйте руководству' },
   ];
@@ -379,7 +686,6 @@ function renderResults() {
     }
   });
 
-  // Полная таблица
   const tbody = document.querySelector('#full-table tbody');
   tbody.innerHTML = '';
   percentiles.forEach(({ p, value }) => {
@@ -394,19 +700,16 @@ function renderResults() {
     tbody.appendChild(tr);
   });
 
-  // Заголовок таблицы
   const thead = document.querySelector('#full-table thead tr');
   thead.innerHTML = hasRate
     ? '<th>Вероятность</th><th>Срок</th><th>Стоимость</th>'
     : '<th>Вероятность</th><th>Срок</th>';
 
-  // CDF График
   renderChart(cdfPoints, unitStr);
 }
 
 function renderChart(cdfPoints, unitStr) {
   const ctx = document.getElementById('cdf-chart').getContext('2d');
-
   if (chart) chart.destroy();
 
   const labels = cdfPoints.map((p) =>
@@ -418,18 +721,16 @@ function renderChart(cdfPoints, unitStr) {
     type: 'line',
     data: {
       labels,
-      datasets: [
-        {
-          label: `Вероятность завершения`,
-          data,
-          borderColor: '#D4956A',
-          backgroundColor: 'rgba(212, 149, 106, 0.15)',
-          fill: true,
-          tension: 0.4,
-          pointRadius: 0,
-          borderWidth: 2.5,
-        },
-      ],
+      datasets: [{
+        label: 'Вероятность завершения',
+        data,
+        borderColor: '#D4956A',
+        backgroundColor: 'rgba(212, 149, 106, 0.15)',
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+        borderWidth: 2.5,
+      }],
     },
     options: {
       responsive: true,
@@ -445,24 +746,13 @@ function renderChart(cdfPoints, unitStr) {
       },
       scales: {
         x: {
-          title: {
-            display: true,
-            text: `Срок (${unitStr})`,
-            color: '#8B7A9A',
-            font: { size: 12 },
-          },
+          title: { display: true, text: `Срок (${unitStr})`, color: '#8B7A9A', font: { size: 12 } },
           ticks: { maxTicksLimit: 10, color: '#A090B0' },
           grid: { color: 'rgba(107, 90, 122, 0.1)' },
         },
         y: {
-          title: {
-            display: true,
-            text: 'Вероятность (%)',
-            color: '#8B7A9A',
-            font: { size: 12 },
-          },
-          min: 0,
-          max: 100,
+          title: { display: true, text: 'Вероятность (%)', color: '#8B7A9A', font: { size: 12 } },
+          min: 0, max: 100,
           ticks: { callback: (v) => v + '%', color: '#A090B0' },
           grid: { color: 'rgba(107, 90, 122, 0.1)' },
         },
@@ -478,7 +768,6 @@ function showScreen(n) {
   [1, 2, 3].forEach((i) => {
     document.getElementById(`screen${i}`).classList.toggle('hidden', i !== n);
   });
-  // Обновляем прогресс-бар
   [1, 2, 3].forEach((i) => {
     const step = document.getElementById(`step${i}`);
     if (!step) return;
@@ -486,17 +775,13 @@ function showScreen(n) {
     if (i < n) step.classList.add('done');
     else if (i === n) step.classList.add('active');
   });
+  if (n === 2) renderGlobalPresets();
   state.screen = n;
   window.scrollTo(0, 0);
 }
 
-function unitLabel() {
-  return state.unit === 'days' ? 'дней' : 'недель';
-}
-
-function unitSuffix() {
-  return state.unit === 'days' ? 'дн.' : 'нед.';
-}
+function unitLabel() { return state.unit === 'days' ? 'дней' : 'недель'; }
+function unitSuffix() { return state.unit === 'days' ? 'дн.' : 'нед.'; }
 
 function showWarning(msg) {
   const el = document.getElementById('warning-msg');

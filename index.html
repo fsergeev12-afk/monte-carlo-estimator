@@ -89,6 +89,27 @@
     Чем точнее оценки — тем достовернее результат.
   </p>
 
+  <!-- Импорт файла -->
+  <div class="import-section">
+    <button class="btn-import" id="btn-import-tasks">📂 Загрузить задачи из файла</button>
+    <a href="#" class="template-link" id="btn-download-template">↓ Скачать шаблон CSV</a>
+    <input type="file" id="import-file-input" accept=".csv,.xlsx,.xls,.xml" style="display:none" />
+    <p class="import-hint">CSV, Excel (.xlsx), MS Project XML — оценки рассчитаются автоматически</p>
+  </div>
+
+  <!-- Глобальный профиль риска -->
+  <div class="global-preset-card">
+    <div class="global-preset-header">
+      <span class="global-preset-title">Профиль риска проекта</span>
+      <span class="global-preset-hint">Применяется ко всем задачам</span>
+    </div>
+    <div class="preset-buttons" id="global-presets">
+      <button class="preset-btn" data-preset="optimistic">🚀 Оптимист<br><small>40 / 40 / 20</small></button>
+      <button class="preset-btn active" data-preset="neutral">🟡 Нейтрально<br><small>25 / 50 / 25</small></button>
+      <button class="preset-btn" data-preset="pessimistic">⚠️ Риск<br><small>15 / 35 / 50</small></button>
+    </div>
+  </div>
+
   <div id="warning-msg" class="hidden"></div>
 
   <div id="task-list"></div>
@@ -205,6 +226,30 @@
     </button>
   </div>
 
+</div>
+
+<!-- ========================
+     Модальное окно импорта
+     ======================== -->
+<div id="import-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="modal-title">Импорт задач</h3>
+      <button class="modal-close" id="btn-close-modal">✕</button>
+    </div>
+    <p class="modal-subtitle">
+      Выбери задачи для импорта.
+      Значения <strong>Оптимист</strong> и <strong>Пессимист</strong> рассчитаны автоматически (×0.7 и ×1.5 от Реалиста) — скорректируй при необходимости.
+    </p>
+    <div class="import-count-row">
+      Выбрано: <strong id="import-selected-count">0</strong> задач
+    </div>
+    <div id="import-task-preview" class="import-preview-list"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" id="btn-import-cancel">Отмена</button>
+      <button class="btn-primary" id="btn-import-confirm">Импортировать →</button>
+    </div>
+  </div>
 </div>
 
 <script type="module" src="app.js"></script>
