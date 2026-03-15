@@ -43,6 +43,7 @@
   /* Радиусы */
   --radius:    14px;
   --radius-sm: 10px;
+  --radius-md: 16px;
 
   /* Переходы */
   --transition: 0.2s ease;

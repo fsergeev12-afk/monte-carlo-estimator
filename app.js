@@ -25,14 +25,24 @@ let worker = null;
 
 // --- Инициализация ---
 document.addEventListener('DOMContentLoaded', () => {
-  if (window.Telegram?.WebApp) {
-    window.Telegram.WebApp.ready();
-    window.Telegram.WebApp.expand();
+  try {
+    if (window.Telegram?.WebApp) {
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+    }
+    setupScreen1();
+    setupScreen2();
+    setupScreen3();
+    showScreen(1);
+  } catch (err) {
+    console.error('Init error:', err);
+    document.body.innerHTML = `
+      <div style="padding:24px;font-family:sans-serif;color:#3D2E4A">
+        <h3>⚠️ Ошибка загрузки</h3>
+        <p style="color:#C4855A;font-size:13px">${err.message}</p>
+        <p style="font-size:12px;color:#8B7A9A">Попробуй обновить страницу</p>
+      </div>`;
   }
-  setupScreen1();
-  setupScreen2();
-  setupScreen3();
-  showScreen(1);
 });
 
 // ===========================
