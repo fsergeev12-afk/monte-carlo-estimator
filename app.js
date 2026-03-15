@@ -122,10 +122,10 @@ function setupScreen2() {
   });
 
   document.getElementById('btn-back-1').addEventListener('click', () => showScreen(1));
-  document.getElementById('btn-calculate').addEventListener('click', () => {
-    if (!validateTasks()) return;
-    runSimulation();
-  });
+
+  const calcHandler = () => { if (!validateTasks()) return; runSimulation(); };
+  document.getElementById('btn-calculate').addEventListener('click', calcHandler);
+  document.getElementById('btn-calculate-top').addEventListener('click', calcHandler);
 
   // Кнопки модального окна импорта
   document.getElementById('btn-import-cancel').addEventListener('click', closeImportModal);
